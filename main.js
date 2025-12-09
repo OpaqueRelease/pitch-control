@@ -434,12 +434,17 @@ function drawControlAreas() {
         const baseB = blueControls ? 246 : 0;
         const baseAlpha = blueControls ? 0.28 : 0.46;
 
-        // Linearly blend the colour towards white and alpha towards a
-        // stronger contested alpha.
-        const r = Math.round(baseR * (1 - t) + 255 * t);
-        const g = Math.round(baseG * (1 - t) + 255 * t);
-        const b = Math.round(baseB * (1 - t) + 255 * t);
-        const alpha = baseAlpha * (1 - t) + 0.7 * t;
+        // Linearly blend the colour towards a softer light tone and a
+        // slightly lower alpha so contested regions "shine" less.
+        const targetR = 235;
+        const targetG = 240;
+        const targetB = 245;
+        const targetAlpha = 0.55;
+
+        const r = Math.round(baseR * (1 - t) + targetR * t);
+        const g = Math.round(baseG * (1 - t) + targetG * t);
+        const b = Math.round(baseB * (1 - t) + targetB * t);
+        const alpha = baseAlpha * (1 - t) + targetAlpha * t;
 
         controlCtx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
       }
