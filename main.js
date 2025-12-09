@@ -27,6 +27,14 @@ const MAX_SPEED_VIS = 35; // logical speed corresponding to max arrow length
 const INITIAL_SPEED = 18; // default starting speed magnitude
 const ARROW_HIT_RADIUS_FACTOR = 1.6; // relative to circle radius, for arrow hit test
 
+// Ball properties (for pass control mode)
+const BALL_RADIUS = 7;
+// Approximate kicked ball speed relative to players (players ≈ 1 unit of speed).
+// Using a modest multiple keeps some passes "reachable" and others not.
+const BALL_SPEED = 3.5; // logical units per "time" step
+// How similar in arrival times two players must be to be considered "simultaneous"
+const PLAYER_TIME_SIMILARITY_FACTOR = 1.2;
+
 // Team colors
 const BLUE_COLOR = "#3b82f6";
 const RED_COLOR = "#ef4444";
@@ -57,6 +65,12 @@ let controlCtx = null;
 let controlWidth = 0;
 let controlHeight = 0;
 
+// Ball model (single ball on the pitch)
+const ball = {
+  x: LOGICAL_WIDTH / 2,
+  y: LOGICAL_HEIGHT / 2,
+};
+
 // Player model
 /**
  * @typedef {"blue" | "red"} Team
@@ -79,9 +93,11 @@ let dragOffsetX = 0;
 let dragOffsetY = 0;
 let hoveredPlayerId = null;
 let draggingArrowPlayerId = null;
+let draggingBall = false;
 
 // Feature flags
 let arrowsEnabled = true;
+let ballModeEnabled = false;
 
 // Simple render throttling: batch multiple updates into a single frame
 let renderQueued = false;
@@ -108,6 +124,19 @@ window.addEventListener("DOMContentLoaded", () => {
       arrowsEnabled = arrowsCheckbox.checked;
       if (!arrowsEnabled) {
         draggingArrowPlayerId = null;
+      }
+      requestRender();
+    });
+  }
+
+  // Hook up ball pass control toggle
+  const ballCheckbox = document.getElementById("toggleBallMode");
+  if (ballCheckbox instanceof HTMLInputElement) {
+    ballCheckbox.checked = ballModeEnabled;
+    ballCheckbox.addEventListener("change", () => {
+      ballModeEnabled = ballCheckbox.checked;
+      if (!ballModeEnabled) {
+        draggingBall = false;
       }
       requestRender();
     });
@@ -225,6 +254,10 @@ function renderAll() {
 
   // Draw players on top
   drawPlayers();
+  // Draw ball only when ball pass mode is enabled
+  if (ballModeEnabled) {
+    drawBall();
+  }
 }
 
 function requestRender() {
@@ -428,56 +461,82 @@ function drawControlAreas() {
       // If only one team has players, let that team control everything.
       if (!isFinite(minBlueSq) && !isFinite(minRedSq)) continue;
 
-      if (!isFinite(minRedSq)) {
-        // Only blue on the pitch
-        controlCtx.fillStyle = CONTROL_BLUE_RGBA;
-      } else if (!isFinite(minBlueSq)) {
-        // Only red on the pitch
-        controlCtx.fillStyle = CONTROL_RED_RGBA;
-      } else {
-        // Both teams present: compute how "contested" the point is.
-        const minSq = Math.min(minBlueSq, minRedSq);
-        const maxSq = Math.max(minBlueSq, minRedSq);
-        const ratioSq = minSq / maxSq; // 0..1
-
-        const blueControls = minBlueSq <= minRedSq;
-
-        // Soften the transition to white so the contested borders look smooth
-        // rather than like hard polygons.
-        const START_FADE_RATIO_SQUARED = 0.45; // start blending towards white
-        const FULL_WHITE_RATIO_SQUARED = 0.9;  // almost equal distance -> very white
-
-        // Determine how much to fade the team colour towards white.
-        let t; // 0 => pure team colour, 1 => very white/contested
-        if (ratioSq <= START_FADE_RATIO_SQUARED) {
-          t = 0;
-        } else if (ratioSq >= FULL_WHITE_RATIO_SQUARED) {
-          t = 1;
+      if (!ballModeEnabled) {
+        // --- Standard pitch control (no ball) ---
+        if (!isFinite(minRedSq)) {
+          // Only blue on the pitch
+          controlCtx.fillStyle = CONTROL_BLUE_RGBA;
+        } else if (!isFinite(minBlueSq)) {
+          // Only red on the pitch
+          controlCtx.fillStyle = CONTROL_RED_RGBA;
         } else {
-          t =
-            (ratioSq - START_FADE_RATIO_SQUARED) /
-            (FULL_WHITE_RATIO_SQUARED - START_FADE_RATIO_SQUARED);
+          // Both teams present: compute how "contested" the point is.
+          const minSq = Math.min(minBlueSq, minRedSq);
+          const maxSq = Math.max(minBlueSq, minRedSq);
+          const ratioSq = minSq / maxSq; // 0..1
+
+          const blueControls = minBlueSq <= minRedSq;
+
+          // Soften the transition to white so the contested borders look smooth
+          // rather than like hard polygons.
+          const START_FADE_RATIO_SQUARED = 0.45; // start blending towards white
+          const FULL_WHITE_RATIO_SQUARED = 0.9;  // almost equal distance -> very white
+
+          // Determine how much to fade the team colour towards white.
+          let t; // 0 => pure team colour, 1 => very white/contested
+          if (ratioSq <= START_FADE_RATIO_SQUARED) {
+            t = 0;
+          } else if (ratioSq >= FULL_WHITE_RATIO_SQUARED) {
+            t = 1;
+          } else {
+            t =
+              (ratioSq - START_FADE_RATIO_SQUARED) /
+              (FULL_WHITE_RATIO_SQUARED - START_FADE_RATIO_SQUARED);
+          }
+
+          // Base RGB + alpha for the controlling team
+          const baseR = blueControls ? 59 : 255;
+          const baseG = blueControls ? 130 : 0;
+          const baseB = blueControls ? 246 : 0;
+          const baseAlpha = blueControls ? 0.28 : 0.46;
+
+          // Linearly blend the colour towards a softer light tone and a
+          // slightly lower alpha so contested regions "shine" less.
+          const targetR = 235;
+          const targetG = 240;
+          const targetB = 245;
+          const targetAlpha = 0.55;
+
+          const r = Math.round(baseR * (1 - t) + targetR * t);
+          const g = Math.round(baseG * (1 - t) + targetG * t);
+          const b = Math.round(baseB * (1 - t) + targetB * t);
+          const alpha = baseAlpha * (1 - t) + targetAlpha * t;
+
+          controlCtx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
         }
+      } else {
+        // --- Ball pass control mode with simplified rule ---
+        const tBlue = isFinite(minBlueSq) ? Math.sqrt(minBlueSq) : Infinity;
+        const tRed = isFinite(minRedSq) ? Math.sqrt(minRedSq) : Infinity;
 
-        // Base RGB + alpha for the controlling team
-        const baseR = blueControls ? 59 : 255;
-        const baseG = blueControls ? 130 : 0;
-        const baseB = blueControls ? 246 : 0;
-        const baseAlpha = blueControls ? 0.28 : 0.46;
+        // Time for the ball to arrive if passed directly from its current position
+        const dbx = lx - ball.x;
+        const dby = ly - ball.y;
+        const distBall = Math.sqrt(dbx * dbx + dby * dby);
+        const tBall = distBall / BALL_SPEED;
 
-        // Linearly blend the colour towards a softer light tone and a
-        // slightly lower alpha so contested regions "shine" less.
-        const targetR = 235;
-        const targetG = 240;
-        const targetB = 245;
-        const targetAlpha = 0.55;
+        const whiteColour = "rgba(235, 240, 245, 0.7)";
 
-        const r = Math.round(baseR * (1 - t) + targetR * t);
-        const g = Math.round(baseG * (1 - t) + targetG * t);
-        const b = Math.round(baseB * (1 - t) + targetB * t);
-        const alpha = baseAlpha * (1 - t) + targetAlpha * t;
-
-        controlCtx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
+        // If both teams can reach this point before the ball, it's contested -> white.
+        if (tBlue < tBall && tRed < tBall) {
+          controlCtx.fillStyle = whiteColour;
+        } else if (tBlue <= tRed) {
+          // Blue arrives first (or only blue can arrive)
+          controlCtx.fillStyle = isFinite(tBlue) ? CONTROL_BLUE_RGBA : whiteColour;
+        } else {
+          // Red arrives first (or only red can arrive)
+          controlCtx.fillStyle = isFinite(tRed) ? CONTROL_RED_RGBA : whiteColour;
+        }
       }
 
       controlCtx.fillRect(ox, oy, 1, 1);
@@ -680,6 +739,98 @@ function drawPlayers() {
   ctx.restore();
 }
 
+function drawBall() {
+  if (!ctx || !canvas) return;
+
+  const w = canvas.width / deviceRatio;
+  const h = canvas.height / deviceRatio;
+  const scaleX = w / LOGICAL_WIDTH;
+  const scaleY = h / LOGICAL_HEIGHT;
+
+  const cx = ball.x * scaleX;
+  const cy = ball.y * scaleY;
+
+  ctx.save();
+
+  // Shadow / glow
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  const glow = ctx.createRadialGradient(
+    cx,
+    cy,
+    BALL_RADIUS * 0.3,
+    cx,
+    cy,
+    BALL_RADIUS * 2.2
+  );
+  glow.addColorStop(0, "rgba(248, 250, 252, 0.95)");
+  glow.addColorStop(1, "rgba(15, 23, 42, 0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, BALL_RADIUS * 2.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Ball body – stylised football with subtle panel pattern
+  const bodyGrad = ctx.createRadialGradient(
+    cx - BALL_RADIUS * 0.4,
+    cy - BALL_RADIUS * 0.5,
+    BALL_RADIUS * 0.3,
+    cx,
+    cy,
+    BALL_RADIUS
+  );
+  bodyGrad.addColorStop(0, "#f9fafb");
+  bodyGrad.addColorStop(0.55, "#e5e7eb");
+  bodyGrad.addColorStop(1, "#9ca3af");
+
+  ctx.fillStyle = bodyGrad;
+  ctx.strokeStyle = "#020617";
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(cx, cy, BALL_RADIUS, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Simple black-and-white panel pattern to resemble a classic football
+  ctx.save();
+  const patchRadius = BALL_RADIUS * 0.55;
+  const patchCount = 6;
+  for (let i = 0; i < patchCount; i++) {
+    const angle = (i * (Math.PI * 2)) / patchCount + Math.PI / 6;
+    const px = cx + Math.cos(angle) * (BALL_RADIUS * 0.45);
+    const py = cy + Math.sin(angle) * (BALL_RADIUS * 0.45);
+
+    ctx.beginPath();
+    for (let j = 0; j < 5; j++) {
+      const a = angle + (j * (Math.PI * 2)) / 5;
+      const vx = px + Math.cos(a) * patchRadius;
+      const vy = py + Math.sin(a) * patchRadius;
+      if (j === 0) ctx.moveTo(vx, vy);
+      else ctx.lineTo(vx, vy);
+    }
+    ctx.closePath();
+    ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+    ctx.fill();
+  }
+
+  // Thin seams from centre to patches
+  ctx.strokeStyle = "rgba(15, 23, 42, 0.45)";
+  ctx.lineWidth = 0.7;
+  for (let i = 0; i < patchCount; i++) {
+    const angle = (i * (Math.PI * 2)) / patchCount + Math.PI / 6;
+    const px = cx + Math.cos(angle) * (BALL_RADIUS * 0.65);
+    const py = cy + Math.sin(angle) * (BALL_RADIUS * 0.65);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(px, py);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  ctx.restore();
+}
+
 // ---- Interaction ---------------------------------------------------------
 
 function attachInteractionHandlers() {
@@ -744,6 +895,25 @@ function onPointerDown(e) {
   const h = rect.height;
   const scaleX = w / LOGICAL_WIDTH;
   const scaleY = h / LOGICAL_HEIGHT;
+
+  // First, check if we are interacting with the ball (only in ball mode)
+  if (ballModeEnabled) {
+    const ballCx = ball.x * scaleX;
+    const ballCy = ball.y * scaleY;
+    const dbx = ballCx - x;
+    const dby = ballCy - y;
+    const ballHitRadius = BALL_RADIUS * 1.9;
+    if (Math.sqrt(dbx * dbx + dby * dby) <= ballHitRadius) {
+      draggingBall = true;
+      draggingPlayerId = null;
+      draggingArrowPlayerId = null;
+      if (e.cancelable) {
+        e.preventDefault();
+      }
+      canvas.style.cursor = "grabbing";
+      return;
+    }
+  }
 
   const centerHitRadius = PLAYER_RADIUS * HIT_RADIUS_FACTOR;
   const arrowHitRadius = PLAYER_RADIUS * ARROW_HIT_RADIUS_FACTOR;
@@ -835,6 +1005,14 @@ function onPointerMove(e) {
 
   const { lx, ly } = pos;
 
+  // Dragging the ball: move it directly in ball mode
+  if (ballModeEnabled && draggingBall) {
+    ball.x = clamp(lx, BALL_RADIUS * 1.2, LOGICAL_WIDTH - BALL_RADIUS * 1.2);
+    ball.y = clamp(ly, BALL_RADIUS * 1.2, LOGICAL_HEIGHT - BALL_RADIUS * 1.2);
+    requestRender();
+    return;
+  }
+
   // If dragging an arrow, update player velocity based on pointer direction
   if (arrowsEnabled && draggingArrowPlayerId != null) {
     const player = players.find((p) => p.id === draggingArrowPlayerId);
@@ -918,18 +1096,24 @@ function onPointerMove(e) {
  * @param {MouseEvent | TouchEvent} e
  */
 function onPointerUp(e) {
-  if (draggingPlayerId == null && draggingArrowPlayerId == null) return;
+  if (
+    draggingPlayerId == null &&
+    draggingArrowPlayerId == null &&
+    !draggingBall
+  )
+    return;
   if (canvas) {
     canvas.style.cursor = "default";
   }
   draggingPlayerId = null;
   draggingArrowPlayerId = null;
+  draggingBall = false;
 }
 
 function onPointerLeave() {
   if (!canvas) return;
   hoveredPlayerId = null;
-  if (draggingPlayerId == null && draggingArrowPlayerId == null) {
+  if (draggingPlayerId == null && draggingArrowPlayerId == null && !draggingBall) {
     canvas.style.cursor = "default";
   }
 }
