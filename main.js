@@ -317,22 +317,20 @@ function drawGrassGradient() {
   const w = canvas.width / deviceRatio;
   const h = canvas.height / deviceRatio;
 
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, "#15803d");
-  grad.addColorStop(0.45, "#16a34a");
-  grad.addColorStop(0.9, "#14532d");
-
-  ctx.fillStyle = grad;
+  // Base grass colour (uniform from goal to goal so brightness is consistent)
+  const baseColor = "#15803d";
+  ctx.fillStyle = baseColor;
   ctx.fillRect(0, 0, w, h);
 
-  // Add subtle mowing stripes
-  const stripes = 10;
-  const stripeWidth = h / stripes;
+  // Add subtle mowing stripes as vertical bands up the pitch
+  const stripes = 12;
+  const stripeWidth = w / stripes;
   ctx.save();
   ctx.globalAlpha = 0.20;
   ctx.fillStyle = "#16a34a";
   for (let i = 0; i < stripes; i += 2) {
-    ctx.fillRect(0, i * stripeWidth, w, stripeWidth);
+    const x = i * stripeWidth;
+    ctx.fillRect(x, 0, stripeWidth, h);
   }
   ctx.restore();
 }

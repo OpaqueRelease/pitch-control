@@ -150,20 +150,20 @@ body {
   width: 16px;
   height: 16px;
   border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.9);
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8), 0 0 0 6px rgba(15, 23, 42, 0.7);
+  border: none;
+  box-shadow: none;
 }
 
 .legend-color--blue {
-  background: radial-gradient(circle at 30% 20%, #93c5fd 0, #3b82f6 32%, #1d4ed8 100%);
+  background-color: #3b82f6;
 }
 
 .legend-color--red {
-  background: radial-gradient(circle at 30% 20%, #fecaca 0, #ef4444 32%, #b91c1c 100%);
+  background-color: #ef4444;
 }
 
 .legend-color--contested {
-  background: radial-gradient(circle at 30% 20%, #ffffff 0, #e5e7eb 40%, #9ca3af 100%);
+  background-color: #e5e7eb;
 }
 
 .legend-item--hint {
