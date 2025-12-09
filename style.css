@@ -66,6 +66,38 @@ body {
   font-size: 0.93rem;
 }
 
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+}
+
+.btn {
+  background: rgba(31, 41, 55, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  color: var(--text-main);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.8);
+}
+
+.record-status {
+  font-size: 0.8rem;
+  color: #f97316;
+  margin-left: 6px;
+}
+
 .app-main {
   flex: 1;
   display: flex;

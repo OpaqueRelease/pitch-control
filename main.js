@@ -108,6 +108,15 @@ let arrowsEnabled = true;
 let ballModeEnabled = false;
 let passLinesEnabled = false;
 
+// Recording / replay state
+let isRecording = false;
+let isReplaying = false;
+let recordingFrames = [];
+let recordStartTime = 0;
+let replayStartTime = 0;
+let replayIndex = 0;
+const REPLAY_SPEED = 1; // 1x by default
+
 // Simple render throttling: batch multiple updates into a single frame
 let renderQueued = false;
 
@@ -180,6 +189,9 @@ window.addEventListener("DOMContentLoaded", () => {
       requestRender();
     });
   }
+
+  // Recording controls
+  initRecordingControls();
 
   // First render
   renderAll();
@@ -278,8 +290,44 @@ function initPlayers() {
 
 // ---- Rendering -----------------------------------------------------------
 
-function renderAll() {
+function renderAll(timestamp) {
   if (!ctx || !canvas) return;
+
+  const now = typeof timestamp === "number" ? timestamp : performance.now();
+
+  // If replaying, advance the simulation state based on recorded frames
+  if (isReplaying && recordingFrames.length > 0) {
+    const tRel = (now - replayStartTime) * REPLAY_SPEED;
+
+    // Find the last frame with t <= tRel
+    while (
+      replayIndex + 1 < recordingFrames.length &&
+      recordingFrames[replayIndex + 1].t <= tRel
+    ) {
+      replayIndex++;
+    }
+
+    const frame = recordingFrames[replayIndex];
+    if (frame) {
+      // Apply recorded state
+      for (const p of players) {
+        const snap = frame.players.find((sp) => sp.id === p.id);
+        if (snap) {
+          p.x = snap.x;
+          p.y = snap.y;
+          p.vx = snap.vx;
+          p.vy = snap.vy;
+        }
+      }
+      ball.x = frame.ball.x;
+      ball.y = frame.ball.y;
+    }
+
+    // Stop replay once we reach the last frame
+    if (replayIndex >= recordingFrames.length - 1) {
+      isReplaying = false;
+    }
+  }
 
   // Clear
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -300,14 +348,35 @@ function renderAll() {
       drawPassLines();
     }
   }
+
+  // Capture frame while recording (using relative time from recordStartTime)
+  if (isRecording && !isReplaying) {
+    const t = now - recordStartTime;
+    recordingFrames.push({
+      t,
+      players: players.map((p) => ({
+        id: p.id,
+        x: p.x,
+        y: p.y,
+        vx: p.vx,
+        vy: p.vy,
+      })),
+      ball: { x: ball.x, y: ball.y },
+    });
+  }
+
+  // If we're replaying, keep driving frames until finished
+  if (isReplaying && replayIndex < recordingFrames.length - 1) {
+    requestRender();
+  }
 }
 
 function requestRender() {
   if (renderQueued) return;
   renderQueued = true;
-  window.requestAnimationFrame(() => {
+  window.requestAnimationFrame((ts) => {
     renderQueued = false;
-    renderAll();
+    renderAll(ts);
   });
 }
 
@@ -938,6 +1007,68 @@ function canPassOnGround(fromX, fromY, target, opponents) {
 
   return true;
 }
+
+// ---- Recording / Replay controls -------------------------------------------
+
+function initRecordingControls() {
+  const recordBtn = document.getElementById("recordBtn");
+  const stopBtn = document.getElementById("stopRecordBtn");
+  const playBtn = document.getElementById("playBtn");
+  const statusEl = document.getElementById("recordStatus");
+
+  if (
+    !(recordBtn instanceof HTMLButtonElement) ||
+    !(stopBtn instanceof HTMLButtonElement) ||
+    !(playBtn instanceof HTMLButtonElement) ||
+    !(statusEl instanceof HTMLElement)
+  ) {
+    return;
+  }
+
+  const updateUI = () => {
+    recordBtn.disabled = isRecording || isReplaying;
+    stopBtn.disabled = !isRecording && !isReplaying;
+    playBtn.disabled = isRecording || recordingFrames.length === 0;
+
+    if (isRecording) {
+      statusEl.textContent = "● Recording";
+    } else if (isReplaying) {
+      statusEl.textContent = "▶ Replaying";
+    } else if (recordingFrames.length > 0) {
+      const durationMs = recordingFrames[recordingFrames.length - 1].t;
+      statusEl.textContent = `Last clip: ${(durationMs / 1000).toFixed(1)}s`;
+    } else {
+      statusEl.textContent = "";
+    }
+  };
+
+  recordBtn.addEventListener("click", () => {
+    if (isReplaying) return;
+    recordingFrames = [];
+    isRecording = true;
+    recordStartTime = performance.now();
+    updateUI();
+    requestRender();
+  });
+
+  stopBtn.addEventListener("click", () => {
+    isRecording = false;
+    isReplaying = false;
+    updateUI();
+  });
+
+  playBtn.addEventListener("click", () => {
+    if (recordingFrames.length === 0) return;
+    isRecording = false;
+    isReplaying = true;
+    replayIndex = 0;
+    replayStartTime = performance.now();
+    updateUI();
+    requestRender();
+  });
+
+  updateUI();
+}
 function drawBall() {
   if (!ctx || !canvas) return;
 
@@ -1040,6 +1171,9 @@ function getPointerPosition(e) {
  */
 function onPointerDown(e) {
   if (!canvas) return;
+
+  // Ignore input while replaying a recording
+  if (isReplaying) return;
 
   const pos = getPointerPosition(e);
   if (!pos) return;
@@ -1152,6 +1286,9 @@ function onPointerDown(e) {
 function onPointerMove(e) {
   if (!canvas) return;
 
+  // Ignore input while replaying a recording
+  if (isReplaying) return;
+
   const pos = getPointerPosition(e);
   if (!pos) return;
 
@@ -1252,6 +1389,7 @@ function onPointerMove(e) {
  * @param {MouseEvent | TouchEvent} e
  */
 function onPointerUp(e) {
+  if (isReplaying) return;
   if (
     draggingPlayerId == null &&
     draggingArrowPlayerId == null &&
