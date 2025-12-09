@@ -20,6 +20,8 @@ const GRID_STEP = 1;
 const PLAYER_RADIUS = 10;
 const PLAYER_OUTLINE_WIDTH = 2;
 const PLAYER_STROKE_STYLE = "#020617";
+// How far around a player you can hover/grab (multiplier of radius)
+const HIT_RADIUS_FACTOR = 2.0;
 
 // Team colors
 const BLUE_COLOR = "#3b82f6";
@@ -59,6 +61,7 @@ let players = [];
 let draggingPlayerId = null;
 let dragOffsetX = 0;
 let dragOffsetY = 0;
+let hoveredPlayerId = null;
 
 window.addEventListener("DOMContentLoaded", () => {
   canvas = /** @type {HTMLCanvasElement} */ (
@@ -375,7 +378,9 @@ function drawPlayers() {
     const cx = p.x * scaleX;
     const cy = p.y * scaleY;
 
-    const radius = PLAYER_RADIUS;
+    const isHovered = p.id === hoveredPlayerId;
+    const isDragging = p.id === draggingPlayerId;
+    const radius = (isHovered || isDragging) ? PLAYER_RADIUS * 1.25 : PLAYER_RADIUS;
 
     // Glow halo
     ctx.save();
@@ -423,7 +428,16 @@ function drawPlayers() {
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.fill();
+    ctx.save();
+    if (isHovered) {
+      ctx.lineWidth = PLAYER_OUTLINE_WIDTH + 1.5;
+      ctx.strokeStyle = "#facc15";
+    } else if (isDragging) {
+      ctx.lineWidth = PLAYER_OUTLINE_WIDTH + 1;
+      ctx.strokeStyle = "#e5e7eb";
+    }
     ctx.stroke();
+    ctx.restore();
   }
 
   ctx.restore();
@@ -438,6 +452,7 @@ function attachInteractionHandlers() {
   canvas.addEventListener("mousedown", onPointerDown);
   window.addEventListener("mousemove", onPointerMove);
   window.addEventListener("mouseup", onPointerUp);
+  canvas.addEventListener("mouseleave", onPointerLeave);
 
   // Touch
   canvas.addEventListener("touchstart", onPointerDown, { passive: false });
@@ -488,7 +503,7 @@ function onPointerDown(e) {
   const { lx, ly } = pos;
 
   // Find top-most player within hit radius
-  const hitRadius = PLAYER_RADIUS * 1.5;
+  const hitRadius = PLAYER_RADIUS * HIT_RADIUS_FACTOR;
   let found = null;
   for (let i = players.length - 1; i >= 0; i--) {
     const p = players[i];
@@ -506,6 +521,8 @@ function onPointerDown(e) {
     e.preventDefault();
   }
 
+  canvas.style.cursor = "grabbing";
+
   draggingPlayerId = found.id;
   dragOffsetX = lx - found.x;
   dragOffsetY = ly - found.y;
@@ -515,7 +532,7 @@ function onPointerDown(e) {
  * @param {MouseEvent | TouchEvent} e
  */
 function onPointerMove(e) {
-  if (!canvas || draggingPlayerId == null) return;
+  if (!canvas) return;
 
   const pos = getPointerPosition(e);
   if (!pos) return;
@@ -526,17 +543,58 @@ function onPointerMove(e) {
 
   const { lx, ly } = pos;
 
-  const player = players.find((p) => p.id === draggingPlayerId);
-  if (!player) return;
+  // If dragging, move the player and re-render
+  if (draggingPlayerId != null) {
+    const player = players.find((p) => p.id === draggingPlayerId);
+    if (!player) return;
 
-  // Update player position with clamping inside pitch
-  const newX = lx - dragOffsetX;
-  const newY = ly - dragOffsetY;
+    // Update player position with clamping inside pitch
+    const newX = lx - dragOffsetX;
+    const newY = ly - dragOffsetY;
 
-  player.x = clamp(newX, PLAYER_RADIUS * 1.5, LOGICAL_WIDTH - PLAYER_RADIUS * 1.5);
-  player.y = clamp(newY, PLAYER_RADIUS * 1.5, LOGICAL_HEIGHT - PLAYER_RADIUS * 1.5);
+    player.x = clamp(
+      newX,
+      PLAYER_RADIUS * 1.5,
+      LOGICAL_WIDTH - PLAYER_RADIUS * 1.5
+    );
+    player.y = clamp(
+      newY,
+      PLAYER_RADIUS * 1.5,
+      LOGICAL_HEIGHT - PLAYER_RADIUS * 1.5
+    );
 
-  // Re-render visualization as the player moves
+    // Re-render visualization as the player moves
+    renderAll();
+    return;
+  }
+
+  // Not dragging: update hovered player for highlight + cursor
+  const hitRadius = PLAYER_RADIUS * HIT_RADIUS_FACTOR;
+  let found = null;
+  for (let i = players.length - 1; i >= 0; i--) {
+    const p = players[i];
+    const dx = p.x - lx;
+    const dy = p.y - ly;
+    if (Math.sqrt(dx * dx + dy * dy) <= hitRadius) {
+      found = p;
+      break;
+    }
+  }
+
+  const newHoveredId = found ? found.id : null;
+  if (newHoveredId === hoveredPlayerId) {
+    return;
+  }
+
+  hoveredPlayerId = newHoveredId;
+
+  if (hoveredPlayerId != null) {
+    canvas.style.cursor = "grab";
+  } else if (draggingPlayerId == null) {
+    canvas.style.cursor = "default";
+  }
+
+  // Re-render only when hovered target changes
   renderAll();
 }
 
@@ -545,7 +603,18 @@ function onPointerMove(e) {
  */
 function onPointerUp(e) {
   if (draggingPlayerId == null) return;
+  if (canvas) {
+    canvas.style.cursor = "default";
+  }
   draggingPlayerId = null;
+}
+
+function onPointerLeave() {
+  if (!canvas) return;
+  hoveredPlayerId = null;
+  if (draggingPlayerId == null) {
+    canvas.style.cursor = "default";
+  }
 }
 
 function clamp(v, min, max) {
