@@ -227,6 +227,15 @@ body {
   transform: translateX(16px);
 }
 
+.toggle input:disabled + .toggle-track {
+  opacity: 0.35;
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.toggle input:disabled + .toggle-track + .toggle-label {
+  color: rgba(148, 163, 184, 0.6);
+}
+
 .app-footer {
   font-size: 0.78rem;
   color: var(--text-muted);

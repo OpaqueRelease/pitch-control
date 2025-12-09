@@ -32,6 +32,9 @@ const BALL_RADIUS = 7;
 // Approximate kicked ball speed relative to players (players ≈ 1 unit of speed).
 // Using a modest multiple keeps some passes "reachable" and others not.
 const BALL_SPEED = 3.5; // logical units per "time" step
+// Radius in which a player is considered to have close control of the ball
+// (in logical units). Increased by 50% to make control zone larger.
+const BALL_CONTROL_RADIUS = 33;
 // How similar in arrival times two players must be to be considered "simultaneous"
 const PLAYER_TIME_SIMILARITY_FACTOR = 1.2;
 
@@ -71,6 +74,11 @@ const ball = {
   y: LOGICAL_HEIGHT / 2,
 };
 
+// Imported ball image (SVG), drawn on the canvas in drawBall
+/** @type {HTMLImageElement | null} */
+let ballImage = null;
+let ballImageLoaded = false;
+
 // Player model
 /**
  * @typedef {"blue" | "red"} Team
@@ -98,6 +106,7 @@ let draggingBall = false;
 // Feature flags
 let arrowsEnabled = true;
 let ballModeEnabled = false;
+let passLinesEnabled = false;
 
 // Simple render throttling: batch multiple updates into a single frame
 let renderQueued = false;
@@ -112,11 +121,19 @@ window.addEventListener("DOMContentLoaded", () => {
   ctx = canvas.getContext("2d");
   if (!ctx) return;
 
+  // Load SVG football image
+  ballImage = new Image();
+  ballImage.src = "./ball.svg";
+  ballImage.addEventListener("load", () => {
+    ballImageLoaded = true;
+    requestRender();
+  });
+
   setupCanvasSize();
   initPlayers();
   attachInteractionHandlers();
 
-  // Hook up arrows toggle
+  // Hook up UI toggles
   const arrowsCheckbox = document.getElementById("toggleArrows");
   if (arrowsCheckbox instanceof HTMLInputElement) {
     arrowsCheckbox.checked = arrowsEnabled;
@@ -137,7 +154,29 @@ window.addEventListener("DOMContentLoaded", () => {
       ballModeEnabled = ballCheckbox.checked;
       if (!ballModeEnabled) {
         draggingBall = false;
+        passLinesEnabled = false;
+        const passCheckbox = document.getElementById("togglePassLines");
+        if (passCheckbox instanceof HTMLInputElement) {
+          passCheckbox.checked = false;
+          passCheckbox.disabled = true;
+        }
+      } else {
+        const passCheckbox = document.getElementById("togglePassLines");
+        if (passCheckbox instanceof HTMLInputElement) {
+          passCheckbox.disabled = false;
+        }
       }
+      requestRender();
+    });
+  }
+
+  // Hook up safe pass-lines toggle (only meaningful when ball mode is enabled)
+  const passCheckbox = document.getElementById("togglePassLines");
+  if (passCheckbox instanceof HTMLInputElement) {
+    passCheckbox.checked = passLinesEnabled;
+    passCheckbox.disabled = !ballModeEnabled;
+    passCheckbox.addEventListener("change", () => {
+      passLinesEnabled = passCheckbox.checked;
       requestRender();
     });
   }
@@ -257,6 +296,9 @@ function renderAll() {
   // Draw ball only when ball pass mode is enabled
   if (ballModeEnabled) {
     drawBall();
+    if (passLinesEnabled) {
+      drawPassLines();
+    }
   }
 }
 
@@ -739,6 +781,165 @@ function drawPlayers() {
   ctx.restore();
 }
 
+function drawPassLines() {
+  if (!ctx || !canvas || !ballModeEnabled || !passLinesEnabled) return;
+
+  const w = canvas.width / deviceRatio;
+  const h = canvas.height / deviceRatio;
+  const scaleX = w / LOGICAL_WIDTH;
+  const scaleY = h / LOGICAL_HEIGHT;
+
+  const bluePlayers = players.filter((p) => p.team === "blue");
+  const redPlayers = players.filter((p) => p.team === "red");
+
+  // Determine which team has close control of the ball
+  const closeBlue = bluePlayers.filter((p) => {
+    const dx = p.x - ball.x;
+    const dy = p.y - ball.y;
+    return Math.sqrt(dx * dx + dy * dy) <= BALL_CONTROL_RADIUS;
+  });
+  const closeRed = redPlayers.filter((p) => {
+    const dx = p.x - ball.x;
+    const dy = p.y - ball.y;
+    return Math.sqrt(dx * dx + dy * dy) <= BALL_CONTROL_RADIUS;
+  });
+
+  let controllingTeam = null;
+  let controller = null;
+
+  if (closeBlue.length > 0 && closeRed.length === 0) {
+    controllingTeam = "blue";
+    // pick closest blue to the ball
+    controller = closeBlue.reduce((best, p) => {
+      const db = (p.x - ball.x) ** 2 + (p.y - ball.y) ** 2;
+      const cb = best ? (best.x - ball.x) ** 2 + (best.y - ball.y) ** 2 : Infinity;
+      return db < cb ? p : best;
+    }, null);
+  } else if (closeRed.length > 0 && closeBlue.length === 0) {
+    controllingTeam = "red";
+    controller = closeRed.reduce((best, p) => {
+      const db = (p.x - ball.x) ** 2 + (p.y - ball.y) ** 2;
+      const cb = best ? (best.x - ball.x) ** 2 + (best.y - ball.y) ** 2 : Infinity;
+      return db < cb ? p : best;
+    }, null);
+  }
+
+  if (!controllingTeam || !controller) return;
+
+  const teammates = (controllingTeam === "blue" ? bluePlayers : redPlayers).filter(
+    (p) => p.id !== controller.id
+  );
+  const opponents = controllingTeam === "blue" ? redPlayers : bluePlayers;
+
+  const fromX = ball.x;
+  const fromY = ball.y;
+
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  for (const target of teammates) {
+    if (!canPassOnGround(fromX, fromY, target, opponents)) continue;
+
+    const fx = fromX * scaleX;
+    const fy = fromY * scaleY;
+    const txCenter = target.x * scaleX;
+    const tyCenter = target.y * scaleY;
+
+    const color =
+      controllingTeam === "blue"
+        ? "rgba(129, 199, 255, 0.9)"
+        : "rgba(252, 165, 165, 0.9)";
+
+    // Direction from ball to target and trimmed end at edge of target player
+    const dx = txCenter - fx;
+    const dy = tyCenter - fy;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const endOffset = PLAYER_RADIUS + 2; // stop slightly before player centre
+    const ex = txCenter - ux * endOffset;
+    const ey = tyCenter - uy * endOffset;
+
+    // Draw main line
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(fx, fy);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+
+    // Draw arrow head at end of line, touching the edge of the player
+    const headLen = 10;
+    const angle = Math.atan2(dy, dx);
+    const hx = ex;
+    const hy = ey;
+    ctx.beginPath();
+    ctx.moveTo(hx, hy);
+    ctx.lineTo(
+      hx - headLen * Math.cos(angle - Math.PI / 6),
+      hy - headLen * Math.sin(angle - Math.PI / 6)
+    );
+    ctx.lineTo(
+      hx - headLen * Math.cos(angle + Math.PI / 6),
+      hy - headLen * Math.sin(angle + Math.PI / 6)
+    );
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Determine whether a straight ground pass from (fromX, fromY) to `target`
+ * can avoid being intercepted by any of the opponents, assuming players
+ * move with unit speed and the ball moves with speed BALL_SPEED.
+ *
+ * The pass is considered unsafe if some opponent can reach the closest
+ * point on the pass line before (or at the same time as) the ball.
+ *
+ * @param {number} fromX
+ * @param {number} fromY
+ * @param {Player} target
+ * @param {Player[]} opponents
+ */
+function canPassOnGround(fromX, fromY, target, opponents) {
+  const dx = target.x - fromX;
+  const dy = target.y - fromY;
+  const segLenSq = dx * dx + dy * dy;
+  if (segLenSq < 1e-4) return false;
+
+  const segLen = Math.sqrt(segLenSq);
+
+  for (const op of opponents) {
+    // Projection of (op - from) onto the segment
+    const vx = op.x - fromX;
+    const vy = op.y - fromY;
+    let t = (vx * dx + vy * dy) / segLenSq;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+
+    const px = fromX + dx * t;
+    const py = fromY + dy * t;
+
+    const ox = op.x - px;
+    const oy = op.y - py;
+    const distToLine = Math.sqrt(ox * ox + oy * oy);
+
+    const distanceAlongPass = segLen * t;
+    const tBall = distanceAlongPass / BALL_SPEED; // ball time to this point
+    const tOpponent = distToLine; // players move at unit speed
+
+    if (tOpponent <= tBall) {
+      // Opponent can intercept at or before the ball reaches this point
+      return false;
+    }
+  }
+
+  return true;
+}
 function drawBall() {
   if (!ctx || !canvas) return;
 
@@ -752,7 +953,7 @@ function drawBall() {
 
   ctx.save();
 
-  // Shadow / glow
+  // Shadow / glow under the ball
   ctx.save();
   ctx.globalAlpha = 0.55;
   const glow = ctx.createRadialGradient(
@@ -763,7 +964,7 @@ function drawBall() {
     cy,
     BALL_RADIUS * 2.2
   );
-  glow.addColorStop(0, "rgba(248, 250, 252, 0.95)");
+  glow.addColorStop(0, "rgba(15, 23, 42, 0.3)");
   glow.addColorStop(1, "rgba(15, 23, 42, 0)");
   ctx.fillStyle = glow;
   ctx.beginPath();
@@ -771,62 +972,19 @@ function drawBall() {
   ctx.fill();
   ctx.restore();
 
-  // Ball body – stylised football with subtle panel pattern
-  const bodyGrad = ctx.createRadialGradient(
-    cx - BALL_RADIUS * 0.4,
-    cy - BALL_RADIUS * 0.5,
-    BALL_RADIUS * 0.3,
-    cx,
-    cy,
-    BALL_RADIUS
-  );
-  bodyGrad.addColorStop(0, "#f9fafb");
-  bodyGrad.addColorStop(0.55, "#e5e7eb");
-  bodyGrad.addColorStop(1, "#9ca3af");
-
-  ctx.fillStyle = bodyGrad;
-  ctx.strokeStyle = "#020617";
-  ctx.lineWidth = 1.4;
-  ctx.beginPath();
-  ctx.arc(cx, cy, BALL_RADIUS, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-
-  // Simple black-and-white panel pattern to resemble a classic football
-  ctx.save();
-  const patchRadius = BALL_RADIUS * 0.55;
-  const patchCount = 6;
-  for (let i = 0; i < patchCount; i++) {
-    const angle = (i * (Math.PI * 2)) / patchCount + Math.PI / 6;
-    const px = cx + Math.cos(angle) * (BALL_RADIUS * 0.45);
-    const py = cy + Math.sin(angle) * (BALL_RADIUS * 0.45);
-
+  // Draw SVG football if loaded; otherwise fallback to a simple circle
+  const size = BALL_RADIUS * 2.4; // slightly larger than logical radius
+  if (ballImage && ballImageLoaded) {
+    ctx.drawImage(ballImage, cx - size / 2, cy - size / 2, size, size);
+  } else {
+    ctx.fillStyle = "#f9fafb";
+    ctx.strokeStyle = "#020617";
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
-    for (let j = 0; j < 5; j++) {
-      const a = angle + (j * (Math.PI * 2)) / 5;
-      const vx = px + Math.cos(a) * patchRadius;
-      const vy = py + Math.sin(a) * patchRadius;
-      if (j === 0) ctx.moveTo(vx, vy);
-      else ctx.lineTo(vx, vy);
-    }
-    ctx.closePath();
-    ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+    ctx.arc(cx, cy, BALL_RADIUS, 0, Math.PI * 2);
     ctx.fill();
-  }
-
-  // Thin seams from centre to patches
-  ctx.strokeStyle = "rgba(15, 23, 42, 0.45)";
-  ctx.lineWidth = 0.7;
-  for (let i = 0; i < patchCount; i++) {
-    const angle = (i * (Math.PI * 2)) / patchCount + Math.PI / 6;
-    const px = cx + Math.cos(angle) * (BALL_RADIUS * 0.65);
-    const py = cy + Math.sin(angle) * (BALL_RADIUS * 0.65);
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(px, py);
     ctx.stroke();
   }
-  ctx.restore();
 
   ctx.restore();
 }
