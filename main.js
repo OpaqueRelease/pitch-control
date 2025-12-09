@@ -10,11 +10,11 @@ const CANVAS_ID = "pitchCanvas";
 const LOGICAL_WIDTH = 1050; // logical units for calculations
 const LOGICAL_HEIGHT = 680;
 
-// Resolution used when calculating control areas
-// (we don't need per-pixel; a step grid is much faster)
+// Resolution used when calculating control areas on a lower‑res buffer.
 // Smaller step -> higher resolution (smoother) but more CPU work.
-// 1 = ultra-fine resolution (per logical pixel).
-const GRID_STEP = 1;
+// We use a slightly coarser grid and then upscale it with smoothing to
+// keep performance high while preserving soft boundaries.
+const GRID_STEP = 3;
 
 // Player visual properties
 const PLAYER_RADIUS = 10;
@@ -31,6 +31,8 @@ const RED_COLOR = "#ef4444";
 const CONTROL_BLUE_RGBA = "rgba(59, 130, 246, 0.28)";
 // Make red-controlled regions visually strong, clearly red
 const CONTROL_RED_RGBA = "rgba(255, 0, 0, 0.46)";
+// Contested areas (similar distance to both teams)
+const CONTROL_CONTESTED_RGBA = "rgba(255, 255, 255, 0.7)";
 
 // Pitch line style
 const PITCH_LINE_COLOR = "rgba(226, 232, 240, 0.85)";
@@ -42,6 +44,14 @@ let canvas = null;
 let ctx = null;
 
 let deviceRatio = window.devicePixelRatio || 1;
+
+// Offscreen canvas used for control map (lower resolution, then upscaled)
+/** @type {HTMLCanvasElement | null} */
+let controlCanvas = null;
+/** @type {CanvasRenderingContext2D | null} */
+let controlCtx = null;
+let controlWidth = 0;
+let controlHeight = 0;
 
 // Player model
 /**
@@ -63,6 +73,9 @@ let dragOffsetX = 0;
 let dragOffsetY = 0;
 let hoveredPlayerId = null;
 
+// Simple render throttling: batch multiple updates into a single frame
+let renderQueued = false;
+
 window.addEventListener("DOMContentLoaded", () => {
   canvas = /** @type {HTMLCanvasElement} */ (
     document.getElementById(CANVAS_ID)
@@ -83,7 +96,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // Recompute layout on resize
   window.addEventListener("resize", () => {
     setupCanvasSize();
-    renderAll();
+    requestRender();
   });
 });
 
@@ -109,6 +122,12 @@ function setupCanvasSize() {
   if (ctx) {
     ctx.setTransform(deviceRatio, 0, 0, deviceRatio, 0, 0);
   }
+
+  // Force control buffer to be re-created at the new size
+  controlCanvas = null;
+  controlCtx = null;
+  controlWidth = 0;
+  controlHeight = 0;
 }
 
 function initPlayers() {
@@ -177,6 +196,15 @@ function renderAll() {
 
   // Draw players on top
   drawPlayers();
+}
+
+function requestRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  window.requestAnimationFrame(() => {
+    renderQueued = false;
+    renderAll();
+  });
 }
 
 function drawGrassGradient() {
@@ -313,30 +341,119 @@ function drawControlAreas() {
   const scaleX = LOGICAL_WIDTH / w;
   const scaleY = LOGICAL_HEIGHT / h;
 
-  // Pre-compute players by team for small speed gain
+  // Pre-compute players by team
   const bluePlayers = players.filter((p) => p.team === "blue");
   const redPlayers = players.filter((p) => p.team === "red");
 
-  if (!bluePlayers.length || !redPlayers.length) return;
+  if (!bluePlayers.length && !redPlayers.length) return;
 
-  ctx.save();
-  ctx.globalCompositeOperation = "source-over";
+  // Prepare / resize offscreen buffer
+  const offW = Math.max(1, Math.round(w / GRID_STEP));
+  const offH = Math.max(1, Math.round(h / GRID_STEP));
 
-  for (let y = 0; y < h; y += GRID_STEP) {
-    for (let x = 0; x < w; x += GRID_STEP) {
-      // Convert to logical coordinates
-      const lx = x * scaleX;
-      const ly = y * scaleY;
-
-      const nearest = findNearestPlayer(lx, ly);
-      if (!nearest) continue;
-
-      ctx.fillStyle =
-        nearest.team === "blue" ? CONTROL_BLUE_RGBA : CONTROL_RED_RGBA;
-      ctx.fillRect(x, y, GRID_STEP, GRID_STEP);
+  if (!controlCanvas || controlWidth !== offW || controlHeight !== offH) {
+    controlCanvas = document.createElement("canvas");
+    controlCanvas.width = offW;
+    controlCanvas.height = offH;
+    controlCtx = controlCanvas.getContext("2d");
+    controlWidth = offW;
+    controlHeight = offH;
+    if (controlCtx) {
+      controlCtx.imageSmoothingEnabled = true;
     }
   }
 
+  if (!controlCtx || !controlCanvas) return;
+
+  // Clear previous frame
+  controlCtx.clearRect(0, 0, offW, offH);
+
+  // Draw the control map onto the low‑res buffer, one cell per pixel.
+  for (let oy = 0; oy < offH; oy++) {
+    for (let ox = 0; ox < offW; ox++) {
+      // Sample at the centre of each coarse cell in logical coordinates
+      const x = (ox + 0.5) * GRID_STEP;
+      const y = (oy + 0.5) * GRID_STEP;
+      const lx = x * scaleX;
+      const ly = y * scaleY;
+
+      // Find nearest blue and red players separately (squared distances).
+      let minBlueSq = Infinity;
+      for (const p of bluePlayers) {
+        const dx = p.x - lx;
+        const dy = p.y - ly;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < minBlueSq) minBlueSq = d2;
+      }
+
+      let minRedSq = Infinity;
+      for (const p of redPlayers) {
+        const dx = p.x - lx;
+        const dy = p.y - ly;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < minRedSq) minRedSq = d2;
+      }
+
+      // If only one team has players, let that team control everything.
+      if (!isFinite(minBlueSq) && !isFinite(minRedSq)) continue;
+
+      if (!isFinite(minRedSq)) {
+        // Only blue on the pitch
+        controlCtx.fillStyle = CONTROL_BLUE_RGBA;
+      } else if (!isFinite(minBlueSq)) {
+        // Only red on the pitch
+        controlCtx.fillStyle = CONTROL_RED_RGBA;
+      } else {
+        // Both teams present: compute how "contested" the point is.
+        const minSq = Math.min(minBlueSq, minRedSq);
+        const maxSq = Math.max(minBlueSq, minRedSq);
+        const ratioSq = minSq / maxSq; // 0..1
+
+        const blueControls = minBlueSq <= minRedSq;
+
+        // Soften the transition to white so the contested borders look smooth
+        // rather than like hard polygons.
+        const START_FADE_RATIO_SQUARED = 0.45; // start blending towards white
+        const FULL_WHITE_RATIO_SQUARED = 0.9;  // almost equal distance -> very white
+
+        // Determine how much to fade the team colour towards white.
+        let t; // 0 => pure team colour, 1 => very white/contested
+        if (ratioSq <= START_FADE_RATIO_SQUARED) {
+          t = 0;
+        } else if (ratioSq >= FULL_WHITE_RATIO_SQUARED) {
+          t = 1;
+        } else {
+          t =
+            (ratioSq - START_FADE_RATIO_SQUARED) /
+            (FULL_WHITE_RATIO_SQUARED - START_FADE_RATIO_SQUARED);
+        }
+
+        // Base RGB + alpha for the controlling team
+        const baseR = blueControls ? 59 : 255;
+        const baseG = blueControls ? 130 : 0;
+        const baseB = blueControls ? 246 : 0;
+        const baseAlpha = blueControls ? 0.28 : 0.46;
+
+        // Linearly blend the colour towards white and alpha towards a
+        // stronger contested alpha.
+        const r = Math.round(baseR * (1 - t) + 255 * t);
+        const g = Math.round(baseG * (1 - t) + 255 * t);
+        const b = Math.round(baseB * (1 - t) + 255 * t);
+        const alpha = baseAlpha * (1 - t) + 0.7 * t;
+
+        controlCtx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
+      }
+
+      controlCtx.fillRect(ox, oy, 1, 1);
+    }
+  }
+
+  // Now upscale the low-res control buffer onto the main canvas with
+  // smoothing, which visually softens the boundaries between cells.
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(controlCanvas, 0, 0, w, h);
   ctx.restore();
 }
 
@@ -563,8 +680,8 @@ function onPointerMove(e) {
       LOGICAL_HEIGHT - PLAYER_RADIUS * 1.5
     );
 
-    // Re-render visualization as the player moves
-    renderAll();
+    // Re-render visualization as the player moves (throttled)
+    requestRender();
     return;
   }
 
@@ -595,7 +712,7 @@ function onPointerMove(e) {
   }
 
   // Re-render only when hovered target changes
-  renderAll();
+  requestRender();
 }
 
 /**

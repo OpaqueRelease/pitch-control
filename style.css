@@ -162,6 +162,10 @@ body {
   background: radial-gradient(circle at 30% 20%, #fecaca 0, #ef4444 32%, #b91c1c 100%);
 }
 
+.legend-color--contested {
+  background: radial-gradient(circle at 30% 20%, #ffffff 0, #e5e7eb 40%, #9ca3af 100%);
+}
+
 .legend-item--hint {
   margin-left: auto;
   font-size: 0.8rem;
