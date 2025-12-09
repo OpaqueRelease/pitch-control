@@ -897,6 +897,8 @@ function drawPassLines() {
  *
  * The pass is considered unsafe if some opponent can reach the closest
  * point on the pass line before (or at the same time as) the ball.
+ * A player's current velocity vector (vx, vy) is taken into account
+ * using the same biased-arrival model as the pitch-control logic.
  *
  * @param {number} fromX
  * @param {number} fromY
@@ -922,13 +924,11 @@ function canPassOnGround(fromX, fromY, target, opponents) {
     const px = fromX + dx * t;
     const py = fromY + dy * t;
 
-    const ox = op.x - px;
-    const oy = op.y - py;
-    const distToLine = Math.sqrt(ox * ox + oy * oy);
-
     const distanceAlongPass = segLen * t;
     const tBall = distanceAlongPass / BALL_SPEED; // ball time to this point
-    const tOpponent = distToLine; // players move at unit speed
+    // Player time uses arrivalCostSquared so current movement direction
+    // biases how quickly they can reach the interception point.
+    const tOpponent = Math.sqrt(arrivalCostSquared(op, px, py));
 
     if (tOpponent <= tBall) {
       // Opponent can intercept at or before the ball reaches this point
