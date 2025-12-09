@@ -22,6 +22,10 @@ const PLAYER_OUTLINE_WIDTH = 2;
 const PLAYER_STROKE_STYLE = "#020617";
 // How far around a player you can hover/grab (multiplier of radius)
 const HIT_RADIUS_FACTOR = 2.0;
+// Velocity / arrow rendering configuration
+const MAX_SPEED_VIS = 35; // logical speed corresponding to max arrow length
+const INITIAL_SPEED = 18; // default starting speed magnitude
+const ARROW_HIT_RADIUS_FACTOR = 1.6; // relative to circle radius, for arrow hit test
 
 // Team colors
 const BLUE_COLOR = "#3b82f6";
@@ -62,6 +66,8 @@ let controlHeight = 0;
  * @property {Team} team
  * @property {number} x // logical coordinate
  * @property {number} y // logical coordinate
+ * @property {number} vx // logical velocity (delta per frame) in x
+ * @property {number} vy // logical velocity (delta per frame) in y
  */
 
 /** @type {Player[]} */
@@ -72,6 +78,10 @@ let draggingPlayerId = null;
 let dragOffsetX = 0;
 let dragOffsetY = 0;
 let hoveredPlayerId = null;
+let draggingArrowPlayerId = null;
+
+// Feature flags
+let arrowsEnabled = true;
 
 // Simple render throttling: batch multiple updates into a single frame
 let renderQueued = false;
@@ -89,6 +99,19 @@ window.addEventListener("DOMContentLoaded", () => {
   setupCanvasSize();
   initPlayers();
   attachInteractionHandlers();
+
+  // Hook up arrows toggle
+  const arrowsCheckbox = document.getElementById("toggleArrows");
+  if (arrowsCheckbox instanceof HTMLInputElement) {
+    arrowsCheckbox.checked = arrowsEnabled;
+    arrowsCheckbox.addEventListener("change", () => {
+      arrowsEnabled = arrowsCheckbox.checked;
+      if (!arrowsEnabled) {
+        draggingArrowPlayerId = null;
+      }
+      requestRender();
+    });
+  }
 
   // First render
   renderAll();
@@ -167,6 +190,9 @@ function initPlayers() {
       team: "blue",
       x: p.x * LOGICAL_WIDTH,
       y: p.y * LOGICAL_HEIGHT,
+      // Initial movement: toward opposition goal (to the right)
+      vx: INITIAL_SPEED,
+      vy: 0,
     });
   }
   for (const p of redFormation) {
@@ -175,6 +201,9 @@ function initPlayers() {
       team: "red",
       x: p.x * LOGICAL_WIDTH,
       y: p.y * LOGICAL_HEIGHT,
+      // Initial movement: toward opposition goal (to the left)
+      vx: -INITIAL_SPEED,
+      vy: 0,
     });
   }
 }
@@ -377,21 +406,23 @@ function drawControlAreas() {
       const lx = x * scaleX;
       const ly = y * scaleY;
 
-      // Find nearest blue and red players separately (squared distances).
+      // Find nearest blue and red players separately using either
+      // pure distance or an arrival "cost" that factors in both
+      // distance and current velocity / movement direction.
       let minBlueSq = Infinity;
       for (const p of bluePlayers) {
-        const dx = p.x - lx;
-        const dy = p.y - ly;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < minBlueSq) minBlueSq = d2;
+        const costSq = arrowsEnabled
+          ? arrivalCostSquared(p, lx, ly)
+          : ((p.x - lx) * (p.x - lx) + (p.y - ly) * (p.y - ly));
+        if (costSq < minBlueSq) minBlueSq = costSq;
       }
 
       let minRedSq = Infinity;
       for (const p of redPlayers) {
-        const dx = p.x - lx;
-        const dy = p.y - ly;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < minRedSq) minRedSq = d2;
+        const costSq = arrowsEnabled
+          ? arrivalCostSquared(p, lx, ly)
+          : ((p.x - lx) * (p.x - lx) + (p.y - ly) * (p.y - ly));
+        if (costSq < minRedSq) minRedSq = costSq;
       }
 
       // If only one team has players, let that team control everything.
@@ -463,6 +494,45 @@ function drawControlAreas() {
 }
 
 /**
+ * Approximate "time to arrive" cost for a player to reach (lx, ly),
+ * taking into account both distance and the player's current velocity
+ * direction. Lower cost means arriving sooner.
+ *
+ * We avoid real units and use a biased distance that is shorter when the
+ * player is already moving toward the point and longer when moving away.
+ *
+ * @param {Player} p
+ * @param {number} lx
+ * @param {number} ly
+ * @returns {number} squared cost (monotonic with time)
+ */
+function arrivalCostSquared(p, lx, ly) {
+  const dx = lx - p.x;
+  const dy = ly - p.y;
+  const distSq = dx * dx + dy * dy;
+  if (distSq === 0) return 0;
+
+  const dist = Math.sqrt(distSq);
+  const dirX = dx / dist;
+  const dirY = dy / dist;
+
+  // Component of current velocity along the direction to the point.
+  const speedAlong = p.vx * dirX + p.vy * dirY;
+
+  // Limit how strongly velocity can bias arrival, to keep shapes stable.
+  const MAX_V_EFFECT = 25;
+  const clampedSpeed = Math.max(-MAX_V_EFFECT, Math.min(MAX_V_EFFECT, speedAlong));
+
+  // Positive clampedSpeed (moving toward) effectively shortens distance;
+  // negative (moving away) lengthens it slightly.
+  const VELOCITY_INFLUENCE = 0.6;
+  const biasedDist = dist - VELOCITY_INFLUENCE * clampedSpeed;
+  const effectiveDist = Math.max(0, biasedDist);
+
+  return effectiveDist * effectiveDist;
+}
+
+/**
  * @param {number} lx
  * @param {number} ly
  * @returns {Player | null}
@@ -501,7 +571,7 @@ function drawPlayers() {
     const cy = p.y * scaleY;
 
     const isHovered = p.id === hoveredPlayerId;
-    const isDragging = p.id === draggingPlayerId;
+    const isDragging = p.id === draggingPlayerId || p.id === draggingArrowPlayerId;
     const radius = (isHovered || isDragging) ? PLAYER_RADIUS * 1.25 : PLAYER_RADIUS;
 
     // Glow halo
@@ -560,6 +630,51 @@ function drawPlayers() {
     }
     ctx.stroke();
     ctx.restore();
+
+    // Velocity arrow: indicates direction and magnitude of movement.
+    const speedSq = p.vx * p.vx + p.vy * p.vy;
+    if (arrowsEnabled && speedSq > 1) {
+      const speed = Math.sqrt(speedSq);
+      const ux = p.vx / speed;
+      const uy = p.vy / speed;
+
+      // Allow reasonably long arrows but keep them visually tidy.
+      // Previously: PLAYER_RADIUS * 2.8; now 50% longer.
+      const maxArrowLen = PLAYER_RADIUS * 4.2;
+      const factor = Math.min(1, speed / MAX_SPEED_VIS);
+      const arrowLen = maxArrowLen * factor;
+
+      const endX = cx + ux * arrowLen;
+      const endY = cy + uy * arrowLen;
+
+      ctx.save();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle =
+        p.team === "blue" ? "rgba(191, 219, 254, 0.9)" : "rgba(254, 202, 202, 0.9)";
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
+
+      // Arrow head
+      const headLen = 6;
+      const angle = Math.atan2(uy, ux);
+      ctx.beginPath();
+      ctx.moveTo(endX, endY);
+      ctx.lineTo(
+        endX - headLen * Math.cos(angle - Math.PI / 6),
+        endY - headLen * Math.sin(angle - Math.PI / 6)
+      );
+      ctx.lineTo(
+        endX - headLen * Math.cos(angle + Math.PI / 6),
+        endY - headLen * Math.sin(angle + Math.PI / 6)
+      );
+      ctx.closePath();
+      ctx.fillStyle =
+        p.team === "blue" ? "rgba(191, 219, 254, 0.9)" : "rgba(254, 202, 202, 0.9)";
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   ctx.restore();
@@ -610,7 +725,7 @@ function getPointerPosition(e) {
   const lx = (x / w) * LOGICAL_WIDTH;
   const ly = (y / h) * LOGICAL_HEIGHT;
 
-  return { lx, ly };
+  return { lx, ly, x, y };
 }
 
 /**
@@ -622,22 +737,74 @@ function onPointerDown(e) {
   const pos = getPointerPosition(e);
   if (!pos) return;
 
-  const { lx, ly } = pos;
+  const { lx, ly, x, y } = pos;
 
-  // Find top-most player within hit radius
-  const hitRadius = PLAYER_RADIUS * HIT_RADIUS_FACTOR;
-  let found = null;
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+  const scaleX = w / LOGICAL_WIDTH;
+  const scaleY = h / LOGICAL_HEIGHT;
+
+  const centerHitRadius = PLAYER_RADIUS * HIT_RADIUS_FACTOR;
+  const arrowHitRadius = PLAYER_RADIUS * ARROW_HIT_RADIUS_FACTOR;
+
+  let selectedPlayerForMove = null;
+  let selectedPlayerForArrow = null;
+  let bestCenterDist = Infinity;
+  let bestArrowDist = Infinity;
+
+  // Search from top-most player down
   for (let i = players.length - 1; i >= 0; i--) {
     const p = players[i];
-    const dx = p.x - lx;
-    const dy = p.y - ly;
-    if (Math.sqrt(dx * dx + dy * dy) <= hitRadius) {
-      found = p;
-      break;
+    const cx = p.x * scaleX;
+    const cy = p.y * scaleY;
+
+    // Centre hit test (for moving player)
+    const dcx = cx - x;
+    const dcy = cy - y;
+    const centerDist = Math.sqrt(dcx * dcx + dcy * dcy);
+    if (centerDist <= centerHitRadius && centerDist < bestCenterDist) {
+      bestCenterDist = centerDist;
+      selectedPlayerForMove = p;
+    }
+
+    // Arrow tip hit test (for adjusting velocity) – only when arrows are enabled
+    if (arrowsEnabled) {
+      const speedSq = p.vx * p.vx + p.vy * p.vy;
+      if (speedSq > 1) {
+        const speed = Math.sqrt(speedSq);
+        const ux = p.vx / speed;
+        const uy = p.vy / speed;
+        const maxArrowLen = PLAYER_RADIUS * 4.2;
+        const factor = Math.min(1, speed / MAX_SPEED_VIS);
+        const arrowLen = maxArrowLen * factor;
+        const tipX = cx + ux * arrowLen;
+        const tipY = cy + uy * arrowLen;
+
+        const dax = tipX - x;
+        const day = tipY - y;
+        const arrowDist = Math.sqrt(dax * dax + day * day);
+        if (arrowDist <= arrowHitRadius && arrowDist < bestArrowDist) {
+          bestArrowDist = arrowDist;
+          selectedPlayerForArrow = p;
+        }
+      }
     }
   }
 
-  if (!found) return;
+  let foundMove = selectedPlayerForMove;
+  let foundArrow = arrowsEnabled ? selectedPlayerForArrow : null;
+
+  // Prefer arrow drag when clicking close to an arrow tip; otherwise move.
+  if (foundArrow) {
+    draggingArrowPlayerId = foundArrow.id;
+    draggingPlayerId = null;
+  } else if (foundMove) {
+    draggingPlayerId = foundMove.id;
+    draggingArrowPlayerId = null;
+  } else {
+    return;
+  }
 
   if (e.cancelable) {
     e.preventDefault();
@@ -645,9 +812,12 @@ function onPointerDown(e) {
 
   canvas.style.cursor = "grabbing";
 
-  draggingPlayerId = found.id;
-  dragOffsetX = lx - found.x;
-  dragOffsetY = ly - found.y;
+  if (draggingPlayerId != null) {
+    const p = foundMove;
+    if (!p) return;
+    dragOffsetX = lx - p.x;
+    dragOffsetY = ly - p.y;
+  }
 }
 
 /**
@@ -665,7 +835,31 @@ function onPointerMove(e) {
 
   const { lx, ly } = pos;
 
-  // If dragging, move the player and re-render
+  // If dragging an arrow, update player velocity based on pointer direction
+  if (arrowsEnabled && draggingArrowPlayerId != null) {
+    const player = players.find((p) => p.id === draggingArrowPlayerId);
+    if (!player) return;
+
+    const dx = lx - player.x;
+    const dy = ly - player.y;
+    const distSq = dx * dx + dy * dy;
+    if (distSq < 1) {
+      player.vx = 0;
+      player.vy = 0;
+    } else {
+      const dist = Math.sqrt(distSq);
+      const ux = dx / dist;
+      const uy = dy / dist;
+      const speed = Math.min(dist, MAX_SPEED_VIS);
+      player.vx = ux * speed;
+      player.vy = uy * speed;
+    }
+
+    requestRender();
+    return;
+  }
+
+  // If dragging a player, move them and re-render
   if (draggingPlayerId != null) {
     const player = players.find((p) => p.id === draggingPlayerId);
     if (!player) return;
@@ -724,17 +918,18 @@ function onPointerMove(e) {
  * @param {MouseEvent | TouchEvent} e
  */
 function onPointerUp(e) {
-  if (draggingPlayerId == null) return;
+  if (draggingPlayerId == null && draggingArrowPlayerId == null) return;
   if (canvas) {
     canvas.style.cursor = "default";
   }
   draggingPlayerId = null;
+  draggingArrowPlayerId = null;
 }
 
 function onPointerLeave() {
   if (!canvas) return;
   hoveredPlayerId = null;
-  if (draggingPlayerId == null) {
+  if (draggingPlayerId == null && draggingArrowPlayerId == null) {
     canvas.style.cursor = "default";
   }
 }
