@@ -35,6 +35,35 @@ Then open the URL printed in the terminal (typically `http://localhost:3000` or 
 
 The `start` script uses `npx serve .` to host the current directory as a static site.
 
+#### Option 3 – macOS double‑click app (Automator wrapper)
+
+You can bundle the project with a tiny macOS app so you (or students) can just double‑click an icon to launch the simulation:
+
+1. **Create a bundle folder**
+   - Create a folder such as `pitch-control-bundle/`.
+   - Move/clone this repo inside it so the structure is:
+     - `pitch-control-bundle/pitch-control/` (this repo, with `index.html`, `main.js`, etc.)
+2. **Create the app in Automator (macOS)**
+   - Open **Automator** → **New Document** → choose **Application**.
+   - Add action **“Run Shell Script”**.
+   - Set **Shell** to `/bin/zsh` (or `/bin/bash`) and paste:
+
+     ```bash
+     open "$(dirname "$0")/pitch-control/index.html"
+     ```
+
+   - Save the application as `Pitch Control.app` **next to** the folder:
+     - `pitch-control-bundle/Pitch Control.app`
+     - `pitch-control-bundle/pitch-control/`
+3. **Test it**
+   - Double‑click `Pitch Control.app`.
+   - Your default browser should open directly on the simulation.
+4. **Distribute to students**
+   - Zip `pitch-control-bundle/` and give them the ZIP.
+   - Instruct macOS users to:
+     - Unzip, keep `Pitch Control.app` and `pitch-control/` together.
+     - Double‑click `Pitch Control.app` (on first run they may need right‑click → **Open** due to Gatekeeper).
+
 ### How it works (high level)
 
 - The pitch is drawn on a single `<canvas>`:
