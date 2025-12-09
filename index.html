@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Interactive Football Pitch Control</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <h1>Interactive Pitch Control</h1>
+        <p>
+          Drag the circles to move players. The pitch colors itself red or blue
+          depending on which team controls each area.
+        </p>
+      </header>
+
+      <main class="app-main">
+        <section class="pitch-card">
+          <div class="pitch-wrapper">
+            <canvas id="pitchCanvas"></canvas>
+          </div>
+          <div class="legend">
+            <div class="legend-item">
+              <span class="legend-color legend-color--blue"></span>
+              <span>Blue Team Control</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-color legend-color--red"></span>
+              <span>Red Team Control</span>
+            </div>
+            <div class="legend-item legend-item--hint">
+              Tip: Try clustering one team or spreading them wide and see how the
+              control regions react.
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="app-footer">
+        Built as an interactive visualization of football (soccer) pitch control.
+      </footer>
+    </div>
+
+    <script src="./main.js"></script>
+  </body>
+</html>
+
+

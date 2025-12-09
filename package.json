@@ -1,0 +1,22 @@
+{
+  "name": "pitch-control",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Interactive football (soccer) pitch control visualization with draggable players.",
+  "scripts": {
+    "start": "npx --yes serve ."
+  },
+  "keywords": [
+    "football",
+    "soccer",
+    "pitch-control",
+    "visualization",
+    "voronoi-like"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}
+
+
